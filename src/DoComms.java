@@ -6,7 +6,9 @@ import java.net.Socket;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.KeyPair;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -27,6 +29,7 @@ class DoComms implements Runnable {
 	Cipher sessionEncryptCipher;
 	Cipher sessionDecryptCipher;
 
+	//Initialize the server communication protocol
 	DoComms(Socket server, KeyPair keyPair) {
 		this.clientSocket = server;
 		this.keyPair = keyPair;
@@ -40,47 +43,86 @@ class DoComms implements Runnable {
 		sessionDecryptCipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
 		sessionDecryptCipher.init(Cipher.DECRYPT_MODE, sessionKey, ips);
 	}
-
-	public String encrypt(String input) throws IllegalBlockSizeException, BadPaddingException {
-		byte[] inputInByteArray = input.getBytes();
-		byte[] encryptedInput = sessionEncryptCipher.doFinal(inputInByteArray);
-		return DatatypeConverter.printBase64Binary(encryptedInput);
-	}
-
-	public String decrypt(String input) throws IllegalBlockSizeException, BadPaddingException {
-		byte[] inputInByteArray = DatatypeConverter.parseBase64Binary(input);
-		byte[] decryptedInput = sessionDecryptCipher.doFinal(inputInByteArray);
-		return new String(decryptedInput);
-	}
-
+	
 	public void run() {
 		try {
+			//connection initialise, initialize the IO from client
 			String inputLine;
 			out = new PrintWriter(clientSocket.getOutputStream(), true);
 			in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
 			BufferedReader stdIn = new BufferedReader(new InputStreamReader(System.in));
+			//send the RSA public key
 			out.println(keyPair.getPublic());
 			out.println("end key");
 			try {
+				MessageDigest md = MessageDigest.getInstance("SHA-256");
+				
+				//read the encrypted AES session key from the client.
+				//The session key is received in the format:
+				//sessionKey
+				//end key
 				while ((inputLine = in.readLine()) != null) {
 					if (inputLine.equalsIgnoreCase("end key")) {
 						break;
 					} else {
+						//Key was received, the server can rebuild the decrypted AES session key using the private RSA key.
+						
+						//the line below turns the stringified encrpyted session key back into a byte array
 						byte[] encryptedKey = DatatypeConverter.parseBase64Binary(inputLine);
+						//Initialize a cipher decrypter
 						Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
 						cipher.init(Cipher.DECRYPT_MODE, keyPair.getPrivate());
+						//decrypted key
 						byte[] decryptedKey = cipher.doFinal(encryptedKey);
+						
+						//build decrypted AES key, and store it.
 						sessionKey = new SecretKeySpec(decryptedKey, "AES");
 						createCiphers();
-						out.println(encrypt(clientSocket.toString()));
+						//send client first message, a toString of the socket it is connected on
+
+						byte[] inputInByteArray = clientSocket.toString().getBytes();
+						byte[] encryptedInput = sessionEncryptCipher.doFinal(inputInByteArray);
+						String encryptedMessage = DatatypeConverter.printBase64Binary(encryptedInput);
+						out.println(encryptedMessage);
+						
+						byte[] messageHash = new byte[inputInByteArray.length + sessionKey.getEncoded().length];
+						System.arraycopy(inputInByteArray, 0, messageHash, 0, inputInByteArray.length);
+						System.arraycopy(sessionKey.getEncoded(), 0, messageHash, inputInByteArray.length, sessionKey.getEncoded().length);
+						
+						byte outputHash[] = md.digest(messageHash);
+						
+						out.println(new String(outputHash));
 					}
 				}
+				
+				
+				
+				//read input from user (server administrator), and input from connected client
 				while (true) {
 					if (in.ready()) {
 						inputLine = in.readLine();
+						String hash = in.readLine();
 						System.out.println("Received:" + inputLine);
-						String decryptedMessage = decrypt(inputLine);
+						System.out.println("hash:" + hash);
+						byte[] inputInByteArray = DatatypeConverter.parseBase64Binary(inputLine);
+						byte[] decryptedInput = sessionDecryptCipher.doFinal(inputInByteArray);
+						
+						String decryptedMessage = new String(decryptedInput);
+						
+						byte[] rebuiltHash = new byte[decryptedInput.length + sessionKey.getEncoded().length];
+						System.arraycopy(decryptedInput, 0, rebuiltHash, 0, decryptedInput.length);
+						System.arraycopy(sessionKey.getEncoded(), 0, rebuiltHash, decryptedInput.length, sessionKey.getEncoded().length);
+						
+						byte outputHash[] = md.digest(rebuiltHash);
+
+						if (Arrays.equals(hash.getBytes(), outputHash)){
+							System.out.println("Hash match!");
+						} else {
+							System.out.println("Hashes do not match! Decrypted message may be garbled and/or tempered with.");
+						}
+
 						System.out.println("Decrypted:" + decryptedMessage);
+						
 						if (decryptedMessage.equalsIgnoreCase("Bye.")) {
 							break;
 						}
@@ -88,9 +130,22 @@ class DoComms implements Runnable {
 					}
 					if (stdIn.ready()) {
 						String fromOwner = stdIn.readLine();
-						String encryptedMessage = encrypt(fromOwner);
+						byte[] inputInByteArray = fromOwner.getBytes();
+						byte[] encryptedInput = sessionEncryptCipher.doFinal(inputInByteArray);
+						String encryptedMessage = DatatypeConverter.printBase64Binary(encryptedInput);
+						
+						byte[] messageHash = new byte[inputInByteArray.length + sessionKey.getEncoded().length];
+						System.arraycopy(inputInByteArray, 0, messageHash, 0, inputInByteArray.length);
+						System.arraycopy(sessionKey.getEncoded(), 0, messageHash, inputInByteArray.length, sessionKey.getEncoded().length);
+						
+						byte outputHash[] = md.digest(messageHash);
+						
 						System.out.println("Encrypted Message Sent: " + encryptedMessage);
 						out.println(encryptedMessage);
+
+						System.out.println("hash:" + new String(outputHash));
+						out.println(new String(outputHash));
+						
 						if (fromOwner.equalsIgnoreCase("Bye.")) {
 							break;
 						}

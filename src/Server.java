@@ -8,12 +8,19 @@ public class Server {
 		int portNumber = 4000;
 		int maxConnections = 5;
 		int i = 0;
-
+		
+		//Server initializes the socket it must listen on
 		try (ServerSocket serverSocket = new ServerSocket(portNumber);) {
-			 KeyPair keyPair = KeyPairGenerator.getInstance("RSA").generateKeyPair();
+			//generate RSA keypair
+			KeyPair keyPair = KeyPairGenerator.getInstance("RSA").generateKeyPair();
+			
+			//THREADING FOR MULTIPLE CONNECTIONS
 			while ((i++ < maxConnections) || (maxConnections == 0)) {
-				Socket clientSocket = serverSocket.accept();
-				DoComms conn_c = new DoComms(clientSocket, keyPair);
+				Socket clientSocket = serverSocket.accept();//wait for connection...
+				DoComms conn_c = new DoComms(clientSocket, keyPair); //initialize the communication protocol for the server,
+																	//pass it the RSA keypair.
+				
+				//run the communication protocol
 				Thread t = new Thread(conn_c);
 				t.start();
 			}

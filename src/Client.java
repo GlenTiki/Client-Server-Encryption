@@ -4,18 +4,14 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.math.BigInteger;
 import java.net.Socket;
-import java.security.InvalidAlgorithmParameterException;
-import java.security.InvalidKeyException;
 import java.security.KeyFactory;
-import java.security.NoSuchAlgorithmException;
+import java.security.MessageDigest;
 import java.security.PublicKey;
 import java.security.spec.RSAPublicKeySpec;
+import java.util.Arrays;
 
-import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
-import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.KeyGenerator;
-import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
 import javax.xml.bind.DatatypeConverter;
@@ -23,40 +19,13 @@ import javax.xml.bind.DatatypeConverter;
 public class Client {
 
 	private SecretKey sessionKey;
-	private Cipher sessionEncryptCipher;
-	private Cipher sessionDecryptCipher;
 
 	public Client(SecretKey sessionKey) {
 		this.sessionKey = sessionKey;
-		try {
-			createCiphers();
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-	}
-
-	private void createCiphers() throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException, InvalidAlgorithmParameterException {
-		byte[] iv = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-		IvParameterSpec ips = new IvParameterSpec(iv);
-		sessionEncryptCipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
-		sessionEncryptCipher.init(Cipher.ENCRYPT_MODE, sessionKey, ips);
-		sessionDecryptCipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
-		sessionDecryptCipher.init(Cipher.DECRYPT_MODE, sessionKey, ips);
-	}
-
-	public String encrypt(String input) throws IllegalBlockSizeException, BadPaddingException {
-		byte[] inputInByteArray = input.getBytes();
-		byte[] encryptedInput = sessionEncryptCipher.doFinal(inputInByteArray);
-		return DatatypeConverter.printBase64Binary(encryptedInput);
-	}
-
-	public String decrypt(String input) throws IllegalBlockSizeException, BadPaddingException {
-		byte[] inputInByteArray = DatatypeConverter.parseBase64Binary(input);
-		byte[] decryptedInput = sessionDecryptCipher.doFinal(inputInByteArray);
-		return new String(decryptedInput);
 	}
 
 	public static void main(String[] args) throws IOException {
+		// Initialize connection to server's socket
 		String hostName = "127.0.0.1";
 		int portNumber = 4000;
 
@@ -69,12 +38,30 @@ public class Client {
 			KeyGenerator keygen = KeyGenerator.getInstance("AES");
 			SecretKey sessionKey = keygen.generateKey();
 
+			// create the client object
 			Client client = new Client(sessionKey);
 
-			String fromServer;
-			String fromUser;
-			BigInteger modulus = new BigInteger("123");
-			BigInteger exponent = new BigInteger("123");
+			byte[] iv = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+			IvParameterSpec ips = new IvParameterSpec(iv);
+			Cipher sessionEncryptCipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+			sessionEncryptCipher.init(Cipher.ENCRYPT_MODE, sessionKey, ips);
+			Cipher sessionDecryptCipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+			sessionDecryptCipher.init(Cipher.DECRYPT_MODE, sessionKey, ips);
+
+			String fromServer; // a message from the server
+			String fromUser; // message to send server
+			BigInteger modulus = new BigInteger("123"); // modulus of the RSA
+														// public key
+			BigInteger exponent = new BigInteger("123"); // Exponent of the RSA
+															// public key
+
+			// Receive initialization messages from server. Server sends
+			// messages in the following format:
+			// "modulus:" + modulus
+			// "exponent:" + exponent
+			// end key
+			// The code below gets and saves this data for rebuilding the RSA
+			// public key
 			while ((fromServer = clientIn.readLine()) != null) {
 				if (fromServer.contains("modulus:")) {
 					modulus = new BigInteger(fromServer.split(":")[1].trim());
@@ -93,26 +80,72 @@ public class Client {
 			// encrypt the aes session key with the rsa public key
 			Cipher rsaCipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
 			rsaCipher.init(Cipher.ENCRYPT_MODE, pub);
+			// encrypt the session key with the RSA public key HERE
 			byte[] encryptedSessionKey = rsaCipher.doFinal(sessionKey.getEncoded());
 
 			String stringifiedEncryptedSessionKey = DatatypeConverter.printBase64Binary(encryptedSessionKey);
 
+			// Send the server the encrypted session key in the format:
+			// encryptedSessionKey
+			// "end key"
 			clientOut.println(stringifiedEncryptedSessionKey);
 			clientOut.println("end key");
+
+			// Now read input from user and server.
+			// With server input, messages must be decrypted using the aes
+			// session key, and displayed to user
+			// Wit user input, encrypt the messages with the aes session key,
+			// display the encrypted data to user, and send to server
+
+		    MessageDigest md = MessageDigest.getInstance("SHA-256");
 			while (true) {
+				// server input to client, to be displayed to user
 				if (clientIn.ready()) {
 					fromServer = clientIn.readLine();
+					String hash = clientIn.readLine();
 					System.out.println("Received Encrypted Message:" + fromServer);
-					String decryptedMessage = client.decrypt(fromServer);
+					System.out.println("hash:" + hash);
+
+					byte[] inputInByteArray = DatatypeConverter.parseBase64Binary(fromServer);
+					byte[] decryptedInput = sessionDecryptCipher.doFinal(inputInByteArray);
+					String decryptedMessage = new String(decryptedInput);
+					
+					byte[] rebuiltHash = new byte[decryptedInput.length + sessionKey.getEncoded().length];
+					System.arraycopy(decryptedInput, 0, rebuiltHash, 0, decryptedInput.length);
+					System.arraycopy(sessionKey.getEncoded(), 0, rebuiltHash, decryptedInput.length, sessionKey.getEncoded().length);
+
+				    byte outputHash[] = md.digest(rebuiltHash);
+					
+					if (Arrays.equals(hash.getBytes(), outputHash)){
+						System.out.println("Hash match!");
+					} else {
+						System.out.println("Hashes do not match! Decrypted message may be garbled and/or tempered with.");
+					}
+					
 					System.out.println("Decrypted:" + decryptedMessage);
+					
 					if (decryptedMessage.equalsIgnoreCase("Bye."))
 						break;
 				}
+				// user input to client, to be sent to server
 				if (stdIn.ready()) {
 					fromUser = stdIn.readLine();
-					String encryptedMessage = client.encrypt(fromUser);
+
+					byte[] inputInByteArray = fromUser.getBytes();
+					byte[] encryptedInput = sessionEncryptCipher.doFinal(inputInByteArray);
+
+					String encryptedMessage = DatatypeConverter.printBase64Binary(encryptedInput);
+					
+					byte[] messageHash = new byte[inputInByteArray.length + sessionKey.getEncoded().length];
+					System.arraycopy(inputInByteArray, 0, messageHash, 0, inputInByteArray.length);
+					System.arraycopy(sessionKey.getEncoded(), 0, messageHash, inputInByteArray.length, sessionKey.getEncoded().length);
+					
+					byte outputHash[] = md.digest(messageHash);
+
 					System.out.println("Encrypted Message Sent: " + encryptedMessage);
 					clientOut.println(encryptedMessage);
+					System.out.println("hash:" + new String(outputHash));
+					clientOut.println(new String(outputHash));
 					if (fromUser.equalsIgnoreCase("Bye."))
 						break;
 				}
