@@ -1,7 +1,10 @@
 import java.io.BufferedReader;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.OutputStream;
 import java.math.BigInteger;
 import java.net.Socket;
 import java.security.KeyFactory;
@@ -14,9 +17,32 @@ import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
-import javax.xml.bind.DatatypeConverter;
 
 public class Client {
+	
+	private Socket socket;
+	
+	public Client(Socket socket){
+		this.socket = socket;
+	}
+	
+	public void sendBytes(byte[] myByteArray, int start, int len) throws IOException {
+	    if (len < 0)
+	        throw new IllegalArgumentException("Negative length not allowed");
+	    if (start < 0 || start >= myByteArray.length)
+	        throw new IndexOutOfBoundsException("Out of bounds: " + start);
+	    // Other checks if needed.
+
+	    // May be better to save the streams in the support class;
+	    // just like the socket variable.
+	    OutputStream out = socket.getOutputStream(); 
+	    DataOutputStream dos = new DataOutputStream(out);
+
+	    dos.writeInt(len);
+	    if (len > 0) {
+	        dos.write(myByteArray, start, len);
+	    }
+	}
 
 
 	public static void main(String[] args) throws IOException {
@@ -27,8 +53,12 @@ public class Client {
 
 		// Initialize the IO from server
 		try (Socket socket = new Socket(hostName, portNumber);
-				PrintWriter clientOut = new PrintWriter(socket.getOutputStream(), true);
-				BufferedReader clientIn = new BufferedReader(new InputStreamReader(socket.getInputStream()));) {
+				OutputStream out = socket.getOutputStream();
+				DataOutputStream dos = new DataOutputStream(out);
+				InputStream in = socket.getInputStream();
+			    DataInputStream dis = new DataInputStream(in);) {
+			Client client = new Client(socket);
+			
 			BufferedReader stdIn = new BufferedReader(new InputStreamReader(System.in));
 
 			// Generate AES session key
@@ -59,7 +89,14 @@ public class Client {
 			// 
 			// The code below gets and saves this data for rebuilding the RSA
 			// public key
-			while ((fromServer = clientIn.readLine()) != null) {
+			int len;
+			while ((len = dis.readInt()) != 0) {
+			    byte[] data = new byte[len];
+			    if (len > 0) {
+			        dis.readFully(data);
+			    }
+			    fromServer = new String(data);
+			    
 				if (fromServer.contains("modulus:")) {
 					modulus = new BigInteger(fromServer.split(":")[1].trim());
 				} else if (fromServer.contains("public exponent:")) {
@@ -80,15 +117,14 @@ public class Client {
 			// encrypt the session key with the RSA public key HERE
 			byte[] encryptedSessionKey = rsaCipher.doFinal(sessionKey.getEncoded());
 
-			String stringifiedEncryptedSessionKey = DatatypeConverter.printBase64Binary(encryptedSessionKey);
-
 			// Send the server the encrypted session key in the format:
 			//
 			// encryptedSessionKey
 			// "end key"
 			//
-			clientOut.println(stringifiedEncryptedSessionKey);
-			clientOut.println("end key");
+			client.sendBytes(encryptedSessionKey, 0, encryptedSessionKey.length);
+			String endKey = "end key";
+			client.sendBytes(endKey.getBytes(), 0, endKey.getBytes().length);
 
 			// Now read input from user and server.
 			// With server input, messages must be decrypted using the AES
@@ -99,14 +135,22 @@ public class Client {
 			while (true) {
 				
 				// Server input to client, to be displayed to user
-				if (clientIn.ready()) {
-					fromServer = clientIn.readLine();
-					String hash = clientIn.readLine();
-					System.out.println("Received Encrypted Message:" + fromServer);
+				if (in.available() != 0) {
+					len = dis.readInt();
+				    byte[] inputInByteArray = new byte[len];
+				    if (len > 0) {
+				        dis.readFully(inputInByteArray);
+				    }
+
+					len = dis.readInt();
+				    byte[] hash = new byte[len];
+				    if (len > 0) {
+				        dis.readFully(hash);
+				    }
+				    
+					System.out.println("Received Encrypted Message:" + new String(inputInByteArray));
 					System.out.println("hash:" + hash);
 
-					// Decrypting message
-					byte[] inputInByteArray = DatatypeConverter.parseBase64Binary(fromServer);
 					byte[] decryptedInput = sessionDecryptCipher.doFinal(inputInByteArray);
 					String decryptedMessage = new String(decryptedInput);
 					
@@ -118,7 +162,7 @@ public class Client {
 				    byte outputHash[] = md.digest(rebuiltHash);
 					
 				    // Validating hash
-					if (Arrays.equals(hash.getBytes(), outputHash)){
+					if (Arrays.equals(hash, outputHash)){
 						System.out.println("Hash match!");
 					} else {
 						System.out.println("Hashes do not match! Decrypted message may be garbled and/or tempered with.");
@@ -138,8 +182,6 @@ public class Client {
 					// Encrypting message
 					byte[] inputInByteArray = fromUser.getBytes();
 					byte[] encryptedInput = sessionEncryptCipher.doFinal(inputInByteArray);
-
-					String encryptedMessage = DatatypeConverter.printBase64Binary(encryptedInput);
 					
 					// Building hash
 					byte[] messageHash = new byte[inputInByteArray.length + sessionKey.getEncoded().length];
@@ -149,10 +191,11 @@ public class Client {
 					byte outputHash[] = md.digest(messageHash);
 
 					// Sending and displaying message
-					System.out.println("Encrypted Message Sent: " + encryptedMessage);
-					clientOut.println(encryptedMessage);
+					System.out.println("Encrypted Message Sent: " + new String(encryptedInput));
+
+					client.sendBytes(encryptedInput, 0, encryptedInput.length);
 					System.out.println("hash:" + new String(outputHash));
-					clientOut.println(new String(outputHash));
+					client.sendBytes(outputHash, 0, outputHash.length);
 					if (fromUser.equalsIgnoreCase("Bye."))
 						break;
 				}
