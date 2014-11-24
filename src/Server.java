@@ -9,21 +9,24 @@ public class Server {
 		int maxConnections = 5;
 		int i = 0;
 		
-		//Server initializes the socket it must listen on
+		// Server initializes the socket it must listen on
 		try (ServerSocket serverSocket = new ServerSocket(portNumber);) {
-			//generate RSA keypair
+			// Generate RSA keypair
 			KeyPair keyPair = KeyPairGenerator.getInstance("RSA").generateKeyPair();
 			
-			//THREADING FOR MULTIPLE CONNECTIONS
+			// THREADING FOR MULTIPLE CONNECTIONS
 			while ((i++ < maxConnections) || (maxConnections == 0)) {
-				Socket clientSocket = serverSocket.accept();//wait for connection...
-				DoComms conn_c = new DoComms(clientSocket, keyPair); //initialize the communication protocol for the server,
-																	//pass it the RSA keypair.
+				Socket clientSocket = serverSocket.accept();// Wait for connection...
 				
-				//run the communication protocol
+				// Initialize the communication protocol for the server,
+				// and pass it the RSA keypair.
+				DoComms conn_c = new DoComms(clientSocket, keyPair);
+				
+				// Run the communication protocol
 				Thread t = new Thread(conn_c);
 				t.start();
 			}
+		// Catch exceptions
 		} catch (IOException e) {
 			System.out.println("Exception caught when trying to listen on port " + portNumber + " or listening for a connection");
 			System.out.println(e.getMessage());
